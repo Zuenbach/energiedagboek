@@ -27,7 +27,11 @@
   window.ONESIGNAL_CONFIGURED = ONESIGNAL_APP_ID !== "ONESIGNAL_APP_ID_HIER";
   if (window.ONESIGNAL_CONFIGURED) {
     OneSignalDeferred.push(async function (OneSignal) {
-      await OneSignal.init({ appId: ONESIGNAL_APP_ID });
+      await OneSignal.init({
+        appId: ONESIGNAL_APP_ID,
+        serviceWorkerParam: { scope: "/onesignal/" },
+        serviceWorkerPath: "onesignal/OneSignalSDKWorker.js",
+      });
       window.OneSignalInstance = OneSignal;
     });
   }
