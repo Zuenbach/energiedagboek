@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Energiedagboek</title>
+
+<!-- PWA: maakt "Zet op beginscherm" mogelijk op iOS en Android -->
+<link rel="manifest" href="./manifest.json" />
+<meta name="theme-color" content="#C1702E" />
+<link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Energiedagboek" />
+
+<!--
+  OneSignal: voor meldingen die ook binnenkomen als de app volledig dicht is.
+  1. Maak een gratis account op onesignal.com en een nieuwe "Web Push" app aan.
+  2. Vervang ONESIGNAL_APP_ID_HIER hieronder door je eigen App ID.
+  3. Zonder geldige App ID doet dit script niets (geen foutmelding, gewoon inactief) —
+     de in-app herinnering (zolang de pagina open staat) blijft los daarvan gewoon werken.
+-->
+<script defer src="https://cdn.onesignal.com/sdks/OneSignalSDK.page.js"></script>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  const ONESIGNAL_APP_ID = "31d02697-021c-445d-8956-ff78623b6d56";
+  window.ONESIGNAL_CONFIGURED = ONESIGNAL_APP_ID !== "ONESIGNAL_APP_ID_HIER";
+  if (window.ONESIGNAL_CONFIGURED) {
+    OneSignalDeferred.push(async function (OneSignal) {
+      await OneSignal.init({ appId: ONESIGNAL_APP_ID });
+      window.OneSignalInstance = OneSignal;
+    });
+  }
+</script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ---------------------------------------------------------------------------
+// Opslag: gewone localStorage, blijft bewaard tussen bezoeken op dit domein.
+// ---------------------------------------------------------------------------
+const storage = {
+  get: async (k) => {
+    const v = localStorage.getItem(k);
+    return v !== null ? { key: k, value: v } : null;
+  },
+  set: async (k, value) => {
+    localStorage.setItem(k, value);
+    return { key: k, value };
+  },
+  list: async (prefix) => {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix)) keys.push(k);
+    }
+    return { keys };
+  },
+};
+
+const todayKey = () => {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+};
+
+const formatNL = (isoDate) => {
+  const d = new Date(isoDate + "T12:00:00");
+  return d.toLocaleDateString("nl-NL", { weekday: "long", day: "numeric", month: "long" });
+};
+
+const BLOCK_LIBRARY = [
+  { id: "energie", title: "Energieniveau", type: "gauge", tone: "amber", pack: "core" },
+  { id: "voeding", title: "Hoe gezond heb ik gegeten?", type: "gauge", tone: "amber", pack: "core" },
+  { id: "gevers", title: "Welke activiteiten gaven energie?", type: "chips-multi", tone: "amber", pack: "core",
+    options: ["Focuswerk", "Beweging/sport", "Buiten zijn", "Alleen tijd", "Creatief bezig", "Goed geslapen", "Iets afgerond", "Rust/niks moeten", "Afwisseling", "Hobby"],
+    hasNote: true, notePlaceholder: "Kort voorbeeld (optioneel) — bv. koffie met Sanne na werk" },
+  { id: "vreters", title: "Welke activiteiten kostten energie?", type: "chips-multi", tone: "violet", pack: "core",
+    options: ["Vergaderingen", "Schermtijd", "Onderbrekingen", "Slecht geslapen", "Reistijd/pendelen", "Administratie", "Conflict/spanning", "Te veel tegelijk", "Zorgen voor iemand", "Uitstellen"],
+    hasNote: true, notePlaceholder: "Kort voorbeeld (optioneel) — bv. 3 uur aaneen vergaderen" },
+  { id: "stemming", title: "Stemming", type: "gauge", tone: "violet", pack: "core" },
+  { id: "slaapDuur", title: "Hoe lang sliep je?", type: "chips-single", tone: "neutral", pack: "core", options: ["<6u", "6-7u", "7-8u", "8u+"] },
+  { id: "slaapKwaliteit", title: "Slaapkwaliteit", type: "gauge", tone: "violet", pack: "core" },
+  { id: "activiteiten", title: "Waar ging je tijd naartoe?", type: "chips-multi", tone: "neutral", pack: "core",
+    options: ["Werk", "Huishouden", "Sport", "Sociaal", "Ontspanning", "Zorg", "Reizen", "Anders"],
+    hasNote: true, notePlaceholder: "Iets anders? (optioneel) — bv. verhuizing regelen" },
+  { id: "productiviteit", title: "Productiviteit", type: "gauge", tone: "amber", pack: "core" },
+  { id: "beweging", title: "Beweging", type: "chips-multi", tone: "neutral", pack: "core", options: ["Wandelen", "Sporten", "Fietsen", "Anders", "Geen"],
+    hasNote: true, notePlaceholder: "Iets anders? (optioneel) — bv. yoga" },
+  { id: "sociaal", title: "Met wie had je contact?", type: "chips-multi", tone: "neutral", pack: "core", options: ["Partner", "Vrienden", "Familie", "Collega's", "Niemand"],
+    hasNote: true, notePlaceholder: "Iemand anders? (optioneel) — bv. buurman" },
+  { id: "dankbaar", title: "Dankbaar voor", type: "text", tone: "neutral", pack: "core", placeholder: "Eén ding" },
+  { id: "opmerkingen", title: "Opmerkingen", type: "textarea", tone: "neutral", pack: "core", placeholder: "Iets anders dat je kwijt wilt over vandaag…" },
+];
+
+const BLOCK_MAP = Object.fromEntries(BLOCK_LIBRARY.map((b) => [b.id, b]));
+const DEFAULT_ACTIVE = ["energie", "voeding", "gevers", "vreters", "stemming"];
+
+async function robustCopy(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return "clipboard-api";
+    }
+  } catch (e) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (ok) return "exec-command";
+  } catch (e) {}
+  return "manual";
+}
+
+const CHIP_COLORS = {
+  neutral: { activeBg: "#1C86D6", activeText: "#FBF8F2", idleText: "#6B5D46", idleBorder: "#C9BBA0" },
+  amber: { activeBg: "#1C86D6", activeText: "#FBF8F2", idleText: "#8A5A2E", idleBorder: "#C9A876" },
+  violet: { activeBg: "#1C86D6", activeText: "#FBF8F2", idleText: "#55603E", idleBorder: "#B9C29E" },
+};
+
+function Chip({ label, active, onClick, tone = "neutral" }) {
+  const c = CHIP_COLORS[tone];
+  const colorStyle = active
+    ? { backgroundColor: c.activeBg, color: c.activeText, borderColor: c.activeBg }
+    : { backgroundColor: "transparent", color: c.idleText, borderColor: c.idleBorder };
+  return (
+    <button type="button" onClick={onClick}
+      style={{ ...colorStyle, WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}
+      className="min-h-[40px] px-3.5 py-2 rounded-full border text-sm cursor-pointer select-none transition-colors duration-150">
+      {label}
+    </button>
+  );
+}
+
+function Gauge({ value, onChange, tone = "amber" }) {
+  const colors = { amber: ["#E4D6BC", "#C1702E"], violet: ["#DCE0C4", "#6B7A52"], neutral: ["#E4DECB", "#8A7A55"] };
+  const [off, on] = colors[tone] || colors.neutral;
+  return (
+    <div className="flex gap-1.5">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button key={n} type="button" onClick={() => onChange(n)} aria-label={`${n} van 5`}
+          className="h-3 flex-1 rounded-full transition-colors duration-150"
+          style={{ background: n <= value ? on : off }} />
+      ))}
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div className="rounded-2xl border border-[#D9CBB0] bg-black/[0.025] p-4 space-y-3">
+      <h3 className="text-[13px] uppercase tracking-wide text-[#7A6B52] font-medium">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+const inputStyle = { colorScheme: "light", backgroundColor: "rgba(0,0,0,0.03)", color: "#2E2418" };
+
+function blockLine(block, entry) {
+  const v = entry[block.id];
+  const note = entry[`${block.id}Note`];
+  switch (block.type) {
+    case "gauge": return v ? `${block.title}: ${v}/5` : null;
+    case "chips-single": return v ? `${block.title}: ${v}` : null;
+    case "chips-multi":
+      if (!v || v.length === 0) return null;
+      return `${block.title}: ${v.join(", ")}${note ? " — " + note : ""}`;
+    case "text": case "textarea": return v ? `${block.title}: ${v}` : null;
+    default: return null;
+  }
+}
+
+const emptyEntry = () => ({});
+
+function OneSignalSection() {
+  const [status, setStatus] = useState("idle"); // idle | requesting | granted | denied
+
+  const enablePush = async () => {
+    setStatus("requesting");
+    try {
+      if (window.OneSignalInstance) {
+        await window.OneSignalInstance.Notifications.requestPermission();
+        const granted = window.OneSignalInstance.Notifications.permission;
+        setStatus(granted ? "granted" : "denied");
+      } else {
+        setStatus("denied");
+      }
+    } catch (e) {
+      setStatus("denied");
+    }
+  };
+
+  if (typeof window === "undefined" || !window.ONESIGNAL_CONFIGURED) {
+    return <p className="text-xs text-[#7A6B52]">Nog niet ingesteld.</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-[#7A6B52]">
+        Op iPhone: zet deze pagina eerst op je beginscherm (deel-icoon → "Zet op beginscherm"),
+        open 'm daarna vanaf het beginscherm en tik dan pas op de knop hieronder. Op Android werkt
+        de knop direct.
+      </p>
+      {status !== "granted" && (
+        <button type="button" onClick={enablePush}
+          className="w-full py-2.5 rounded-xl font-medium text-[#FBF3E7]" style={{ backgroundColor: "#C1702E" }}>
+          {status === "requesting" ? "Bezig…" : "Push-meldingen inschakelen"}
+        </button>
+      )}
+      {status === "granted" && <p className="text-xs" style={{ color: "#6B7A52" }}>Push-meldingen staan aan.</p>}
+      {status === "denied" && (
+        <p className="text-xs text-[#8A5A2E]">Niet gelukt of geweigerd. Check de site-instellingen van je browser.</p>
+      )}
+    </div>
+  );
+}
+
+function Energiedagboek() {
+  const [view, setView] = useState("vandaag");
+  const [entry, setEntry] = useState(emptyEntry());
+  const [activeBlocks, setActiveBlocks] = useState(DEFAULT_ACTIVE);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState("");
+  const [showTodayText, setShowTodayText] = useState(false);
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [reminderTime, setReminderTime] = useState("20:00");
+  const [notifPermission, setNotifPermission] = useState(
+    typeof Notification !== "undefined" ? Notification.permission : "unsupported"
+  );
+  const fallbackRef = useRef(null);
+
+  const key = todayKey();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storage.get(`entry:${key}`);
+        if (res?.value) setEntry(JSON.parse(res.value));
+      } catch (e) {}
+      try {
+        const cfg = await storage.get("block-config");
+        if (cfg?.value) {
+          const ids = JSON.parse(cfg.value).filter((id) => BLOCK_MAP[id]);
+          if (ids.length > 0) setActiveBlocks(ids);
+        }
+      } catch (e) {}
+      try {
+        const rem = await storage.get("reminder-config");
+        if (rem?.value) {
+          const r = JSON.parse(rem.value);
+          setReminderEnabled(!!r.enabled);
+          setReminderTime(r.time || "20:00");
+        }
+      } catch (e) {}
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    const t = setTimeout(() => {
+      storage.set(`entry:${key}`, JSON.stringify(entry)).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [entry, loading]);
+
+  useEffect(() => {
+    if (showTodayText && fallbackRef.current) {
+      fallbackRef.current.focus();
+      fallbackRef.current.select();
+    }
+  }, [showTodayText]);
+
+  // Check elke 30 seconden of het tijd is voor de herinnering. Werkt alleen
+  // zolang deze pagina open staat in de browser — voor meldingen die ook
+  // binnenkomen als de app/browser dicht is, is een echte push-dienst nodig.
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (!reminderEnabled || notifPermission !== "granted") return;
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const sentKey = `reminder-sent:${todayKey()}`;
+      if (`${hh}:${mm}` === reminderTime && localStorage.getItem(sentKey) !== "1") {
+        new Notification("Energiedagboek", { body: "Tijd om je dagboek van vandaag in te vullen." });
+        localStorage.setItem(sentKey, "1");
+      }
+    }, 30000);
+    return () => clearInterval(iv);
+  }, [reminderEnabled, reminderTime, notifPermission]);
+
+  const saveReminderConfig = async (enabled, time) => {
+    setReminderEnabled(enabled);
+    setReminderTime(time);
+    await storage.set("reminder-config", JSON.stringify({ enabled, time }));
+  };
+
+  const requestNotifPermission = async () => {
+    if (typeof Notification === "undefined") {
+      setNotifPermission("unsupported");
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    setNotifPermission(perm);
+  };
+
+  const saveBlockConfig = async (ids) => {
+    setActiveBlocks(ids);
+    try {
+      await storage.set("block-config", JSON.stringify(ids));
+    } catch (e) {
+      setToast("Volgorde opslaan mislukt, probeer opnieuw");
+      setTimeout(() => setToast(""), 3000);
+    }
+  };
+
+  const toggleBlockActive = (id) => {
+    if (activeBlocks.includes(id)) saveBlockConfig(activeBlocks.filter((x) => x !== id));
+    else saveBlockConfig([...activeBlocks, id]);
+  };
+
+  const moveBlock = (id, dir) => {
+    const idx = activeBlocks.indexOf(id);
+    const swapWith = idx + dir;
+    if (swapWith < 0 || swapWith >= activeBlocks.length) return;
+    const next = [...activeBlocks];
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    saveBlockConfig(next);
+  };
+
+  const update = (field, value) => setEntry((e) => ({ ...e, [field]: value }));
+  const toggleChip = (field, label) =>
+    setEntry((e) => {
+      const cur = e[field] || [];
+      const next = cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label];
+      return { ...e, [field]: next };
+    });
+
+  const buildTodayText = () => {
+    let out = `Dagboek — ${formatNL(key)}\n\n`;
+    activeBlocks.forEach((id) => {
+      const line = blockLine(BLOCK_MAP[id], entry);
+      if (line) out += line + "\n";
+    });
+    return out;
+  };
+
+  const copyToday = async () => {
+    const text = buildTodayText();
+    const result = await robustCopy(text);
+    if (result === "clipboard-api" || result === "exec-command") {
+      setShowTodayText(false);
+      setToast("Gekopieerd — plak dit in je chat met Claude");
+      setTimeout(() => setToast(""), 3000);
+    } else {
+      setShowTodayText(true);
+      setToast("Kopiëren lukt hier niet automatisch — de tekst hieronder staat al geselecteerd.");
+      setTimeout(() => setToast(""), 5000);
+    }
+  };
+
+  const renderBlock = (block) => {
+    switch (block.type) {
+      case "gauge":
+        return <Gauge value={entry[block.id] || 0} onChange={(v) => update(block.id, v)} tone={block.tone} />;
+      case "chips-single":
+        return (
+          <div className="flex gap-2 flex-wrap">
+            {block.options.map((o) => (
+              <Chip key={o} label={o} tone={block.tone} active={entry[block.id] === o}
+                onClick={() => update(block.id, entry[block.id] === o ? null : o)} />
+            ))}
+          </div>
+        );
+      case "chips-multi":
+        return (
+          <>
+            <div className="flex gap-2 flex-wrap">
+              {block.options.map((o) => (
+                <Chip key={o} label={o} tone={block.tone} active={(entry[block.id] || []).includes(o)}
+                  onClick={() => toggleChip(block.id, o)} />
+              ))}
+            </div>
+            {block.hasNote && (
+              <input type="text" value={entry[`${block.id}Note`] || ""}
+                onChange={(e) => update(`${block.id}Note`, e.target.value)}
+                placeholder={block.notePlaceholder} style={inputStyle}
+                className="w-full border border-[#C9BBA0] rounded-lg px-3 py-2 text-sm placeholder:text-[#9C8D74] focus:outline-none focus:border-[#C1702E]" />
+            )}
+          </>
+        );
+      case "text":
+        return (
+          <input type="text" value={entry[block.id] || ""} onChange={(e) => update(block.id, e.target.value)}
+            placeholder={block.placeholder} style={inputStyle}
+            className="w-full border border-[#C9BBA0] rounded-lg px-3 py-2 text-sm placeholder:text-[#9C8D74] focus:outline-none focus:border-[#2E2418]" />
+        );
+      case "textarea":
+        return (
+          <textarea value={entry[block.id] || ""} onChange={(e) => update(block.id, e.target.value)}
+            placeholder={block.placeholder} rows={3} style={inputStyle}
+            className="w-full border border-[#C9BBA0] rounded-lg px-3 py-2 text-sm placeholder:text-[#9C8D74] focus:outline-none focus:border-[#2E2418] resize-none" />
+        );
+      default: return null;
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#FBF8F2] flex items-center justify-center text-[#7A6B52] text-sm">
+        Laden…
+      </div>
+    );
+  }
+
+  const inactiveBlocks = BLOCK_LIBRARY.filter((b) => !activeBlocks.includes(b.id));
+
+  const TabButton = ({ id, label }) => (
+    <button type="button" onClick={() => setView(id)}
+      style={{
+        WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+        backgroundColor: view === id ? "#2E2418" : "transparent",
+        color: view === id ? "#F3ECE1" : "#6B5D46",
+        borderColor: view === id ? "#2E2418" : "#C9BBA0",
+      }}
+      className="min-h-[40px] px-3.5 py-2 rounded-full text-sm border cursor-pointer select-none transition-colors">
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="min-h-screen text-[#2E2418]"
+      style={{ background: "linear-gradient(180deg, #FBF8F2 0%, #F7F1E4 55%, #F0E8D4 100%)", colorScheme: "light" }}>
+      <div className="max-w-md mx-auto px-4 pt-8 pb-24">
+        <header className="mb-6">
+          <p className="text-[13px] tracking-wide text-[#7A6B52] uppercase mb-1">Energiedagboek</p>
+          <h1 className="text-2xl font-serif" style={{ fontFamily: "ui-serif, Georgia, serif" }}>
+            {formatNL(key)}
+          </h1>
+        </header>
+
+        <div className="flex gap-2 mb-6 flex-wrap">
+          <TabButton id="vandaag" label="Vandaag" />
+          <TabButton id="blocks" label="Blocks aanpassen" />
+          <TabButton id="herinnering" label="Herinnering" />
+        </div>
+
+        {view === "vandaag" && (
+          <div className="space-y-4">
+            {activeBlocks.length === 0 && (
+              <p className="text-sm text-[#7A6B52]">Geen blocks actief. Ga naar "Blocks aanpassen" om te kiezen waarop je wilt reflecteren.</p>
+            )}
+            {activeBlocks.map((id) => {
+              const block = BLOCK_MAP[id];
+              if (!block) return null;
+              return <Section key={id} title={block.title}>{renderBlock(block)}</Section>;
+            })}
+
+            <button type="button" onClick={copyToday}
+              className="w-full py-3 rounded-xl font-medium text-[#FBF3E7] transition-colors"
+              style={{ backgroundColor: "#C1702E" }}>
+              Kopieer als tekst (voor in de chat)
+            </button>
+
+            {showTodayText && (
+              <textarea ref={fallbackRef} readOnly value={buildTodayText()} style={inputStyle}
+                className="w-full h-48 border border-[#C9BBA0] rounded-xl p-3 text-xs font-mono" />
+            )}
+          </div>
+        )}
+
+        {view === "blocks" && (
+          <div className="space-y-4">
+            <Section title="Actief — pijltjes wijzigen de volgorde">
+              {activeBlocks.length === 0 && <p className="text-sm text-[#7A6B52]">Nog geen blocks actief.</p>}
+              <div className="space-y-2">
+                {activeBlocks.map((id, i) => {
+                  const block = BLOCK_MAP[id];
+                  return (
+                    <div key={id} className="flex items-center gap-2 rounded-xl border border-[#D9CBB0] bg-white/40 px-3 py-2">
+                      <div className="flex flex-col">
+                        <button type="button" onClick={() => moveBlock(id, -1)} disabled={i === 0}
+                          className="text-xs leading-none px-1 disabled:opacity-25" style={{ color: "#6B5D46" }} aria-label="Omhoog">▲</button>
+                        <button type="button" onClick={() => moveBlock(id, 1)} disabled={i === activeBlocks.length - 1}
+                          className="text-xs leading-none px-1 disabled:opacity-25" style={{ color: "#6B5D46" }} aria-label="Omlaag">▼</button>
+                      </div>
+                      <span className="flex-1 text-sm">{block.title}</span>
+                      <button type="button" onClick={() => toggleBlockActive(id)}
+                        className="text-xs px-2.5 py-1 rounded-full border" style={{ borderColor: "#C9BBA0", color: "#8A5A2E" }}>
+                        Verwijderen
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </Section>
+
+            <Section title="Beschikbaar om toe te voegen">
+              {inactiveBlocks.length === 0 && <p className="text-sm text-[#7A6B52]">Alle blocks zijn al actief.</p>}
+              <div className="space-y-2">
+                {inactiveBlocks.map((block) => (
+                  <div key={block.id} className="flex items-center gap-2 rounded-xl border border-[#D9CBB0] bg-black/[0.02] px-3 py-2">
+                    <span className="flex-1 text-sm text-[#6B5D46]">{block.title}</span>
+                    <button type="button" onClick={() => toggleBlockActive(block.id)}
+                      className="text-xs px-2.5 py-1 rounded-full text-[#FBF3E7]" style={{ backgroundColor: "#C1702E" }}>
+                      Toevoegen
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          </div>
+        )}
+
+        {view === "herinnering" && (
+          <div className="space-y-4">
+            <Section title="Dagelijkse herinnering">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={reminderEnabled}
+                  onChange={(e) => saveReminderConfig(e.target.checked, reminderTime)} />
+                Herinnering inschakelen
+              </label>
+              <div>
+                <p className="text-xs text-[#7A6B52] mb-1.5">Tijdstip</p>
+                <input type="time" value={reminderTime}
+                  onChange={(e) => saveReminderConfig(reminderEnabled, e.target.value)}
+                  style={inputStyle}
+                  className="border border-[#C9BBA0] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#2E2418]" />
+              </div>
+
+              {notifPermission !== "granted" && (
+                <button type="button" onClick={requestNotifPermission}
+                  className="w-full py-2.5 rounded-xl font-medium text-[#FBF3E7]" style={{ backgroundColor: "#C1702E" }}>
+                  Meldingen inschakelen in de browser
+                </button>
+              )}
+              {notifPermission === "granted" && (
+                <p className="text-xs" style={{ color: "#6B7A52" }}>Meldingen staan aan in deze browser.</p>
+              )}
+              {notifPermission === "denied" && (
+                <p className="text-xs text-[#8A5A2E]">
+                  Meldingen zijn geblokkeerd. Zet ze aan via de site-instellingen van je browser.
+                </p>
+              )}
+              <p className="text-xs text-[#7A6B52] pt-1">
+                Deze melding werkt zolang deze pagina open staat in je browser.
+              </p>
+            </Section>
+
+            <Section title="Melding ook als de app dicht is">
+              <OneSignalSection />
+            </Section>
+          </div>
+        )}
+
+        {toast && (
+          <div className="fixed bottom-6 left-4 right-4 max-w-md mx-auto bg-[#2E2418] text-[#F3ECE1] text-sm rounded-xl px-4 py-3 shadow-lg">
+            {toast}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Energiedagboek />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+  });
+}
+</script>
+</body>
+</html>
