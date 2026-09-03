@@ -195,21 +195,41 @@ function blockLine(block, entry) {
 const emptyEntry = () => ({});
 
 function OneSignalSection() {
-  const [status, setStatus] = useState("idle"); // idle | requesting | granted | denied
+  const [status, setStatus] = useState("checking"); // checking | off | requesting | on
+
+  const refreshStatus = () => {
+    const osi = window.OneSignalInstance;
+    if (!osi) { setStatus("off"); return; }
+    const optedIn = !!osi.User?.PushSubscription?.optedIn;
+    setStatus(optedIn ? "on" : "off");
+  };
+
+  useEffect(() => {
+    const t = setInterval(refreshStatus, 1000);
+    const t2 = setTimeout(() => clearInterval(t), 6000); // stop pollen na 6s, alleen nodig tijdens laden
+    refreshStatus();
+    return () => { clearInterval(t); clearTimeout(t2); };
+  }, []);
 
   const enablePush = async () => {
     setStatus("requesting");
     try {
-      if (window.OneSignalInstance) {
-        await window.OneSignalInstance.Notifications.requestPermission();
-        const granted = window.OneSignalInstance.Notifications.permission;
-        setStatus(granted ? "granted" : "denied");
+      const osi = window.OneSignalInstance;
+      if (!osi) { setStatus("off"); return; }
+      if (osi.Notifications.permission) {
+        await osi.User.PushSubscription.optIn();
       } else {
-        setStatus("denied");
+        await osi.Notifications.requestPermission();
       }
-    } catch (e) {
-      setStatus("denied");
-    }
+    } catch (e) {}
+    refreshStatus();
+  };
+
+  const disablePush = async () => {
+    try {
+      await window.OneSignalInstance?.User?.PushSubscription?.optOut();
+    } catch (e) {}
+    refreshStatus();
   };
 
   if (typeof window === "undefined" || !window.ONESIGNAL_CONFIGURED) {
@@ -223,15 +243,20 @@ function OneSignalSection() {
         open 'm daarna vanaf het beginscherm en tik dan pas op de knop hieronder. Op Android werkt
         de knop direct.
       </p>
-      {status !== "granted" && (
-        <button type="button" onClick={enablePush}
+      {status === "on" && (
+        <>
+          <p className="text-xs" style={{ color: "#6B7A52" }}>Push-meldingen staan aan.</p>
+          <button type="button" onClick={disablePush}
+            className="w-full py-2.5 rounded-xl font-medium border" style={{ borderColor: "#C9BBA0", color: "#8A5A2E" }}>
+            Meldingen uitschakelen
+          </button>
+        </>
+      )}
+      {(status === "off" || status === "requesting") && (
+        <button type="button" onClick={enablePush} disabled={status === "requesting"}
           className="w-full py-2.5 rounded-xl font-medium text-[#FBF3E7]" style={{ backgroundColor: "#C1702E" }}>
           {status === "requesting" ? "Bezig…" : "Push-meldingen inschakelen"}
         </button>
-      )}
-      {status === "granted" && <p className="text-xs" style={{ color: "#6B7A52" }}>Push-meldingen staan aan.</p>}
-      {status === "denied" && (
-        <p className="text-xs text-[#8A5A2E]">Niet gelukt of geweigerd. Check de site-instellingen van je browser.</p>
       )}
     </div>
   );
